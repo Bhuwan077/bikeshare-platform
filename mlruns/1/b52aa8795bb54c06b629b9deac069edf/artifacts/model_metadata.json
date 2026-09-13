@@ -1,0 +1,24 @@
+{
+  "trained_at": "2026-09-13T14:59:10.402665+00:00",
+  "feature_columns": [
+    "capacity",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "lag_15m",
+    "lag_30m",
+    "lag_60m",
+    "rolling_mean_60m",
+    "neighbor_avg_bikes_ratio",
+    "forecast_temp_c",
+    "forecast_precip_mm"
+  ],
+  "target_column": "target_bikes_available_60m",
+  "n_training_rows": 921424,
+  "n_backtest_folds": 4,
+  "backtest_model_mae": 0.9810243902393122,
+  "backtest_persistence_mae": 0.8168804164918932,
+  "residual_std": 1.9584193804971144,
+  "residual_n": 712718
+}

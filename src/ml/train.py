@@ -19,15 +19,18 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 import lightgbm as lgb
 import mlflow
+import numpy as np
 import pandas as pd
 
-from src.features.build_features import build_features
+from src.features.build_features import FEATURE_COLUMNS, TARGET_COLUMN, build_features
 from src.ml.baselines import (
     mae,
     predict_persistence,
@@ -38,15 +41,7 @@ from src.ml.baselines import (
 DB_PATH = Path(__file__).resolve().parents[2] / "dbt" / "bikeshare.duckdb"
 MIN_FOLD_HOURS = 12  # each fold's test window needs at least this much data to be meaningful
 TARGET_FOLDS = 4  # the plan's target — used only if enough history actually exists
-
-FEATURE_COLUMNS = [
-    "capacity",
-    "hour_sin", "hour_cos", "dow_sin", "dow_cos",
-    "lag_15m", "lag_30m", "lag_60m", "rolling_mean_60m",
-    "neighbor_avg_bikes_ratio",
-    "forecast_temp_c", "forecast_precip_mm",
-]
-TARGET_COLUMN = "target_bikes_available_60m"
+MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
 
 
 def load_feature_data() -> pd.DataFrame:
@@ -132,11 +127,12 @@ def make_rolling_origin_folds(
     return folds
 
 
-def run_backtest(df: pd.DataFrame) -> pd.DataFrame:
+def run_backtest(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
     folds = make_rolling_origin_folds(df)
     print(f"Running {len(folds)} rolling-origin fold(s)")
 
     results = []
+    all_residuals = []
     for i, (train_end, test_start, test_end) in enumerate(folds):
         train = df[df["fetched_at"] < train_end]
         test = df[(df["fetched_at"] >= test_start) & (df["fetched_at"] < test_end)]
@@ -152,6 +148,14 @@ def run_backtest(df: pd.DataFrame) -> pd.DataFrame:
         X_test, y_test = test[FEATURE_COLUMNS], test[TARGET_COLUMN]
         model.fit(X_train, y_train)
         model_preds = model.predict(X_test)
+
+        # Residuals from held-out test folds ONLY — never from training
+        # data, which would understate real-world prediction error.
+        # This is what the serving API's confidence interval is built
+        # from (see src/serving/api.py), so it must reflect genuine
+        # out-of-sample error, not optimistic in-sample fit.
+        fold_residuals = y_test.to_numpy() - model_preds
+        all_residuals.append(fold_residuals)
 
         fold_result = {
             "fold": i,
@@ -173,7 +177,7 @@ def run_backtest(df: pd.DataFrame) -> pd.DataFrame:
             f"station_hour_mean={fold_result['station_hour_mean_mae']:.3f}"
         )
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), (np.concatenate(all_residuals) if all_residuals else np.array([]))
 
 
 def train_final_model(df: pd.DataFrame) -> lgb.LGBMRegressor:
@@ -195,7 +199,7 @@ def main() -> None:
 
     mlflow.set_experiment("bikeshare-availability")
     with mlflow.start_run():
-        backtest_results = run_backtest(df)
+        backtest_results, residuals = run_backtest(df)
 
         if len(backtest_results) == 0:
             print("No folds could be run — not enough data yet.", file=sys.stderr)
@@ -255,6 +259,35 @@ def main() -> None:
 
         backtest_results.to_csv("backtest_results.csv", index=False)
         mlflow.log_artifact("backtest_results.csv")
+
+        # Persist the model + everything the serving API needs to use
+        # it correctly — feature column order matters for LightGBM, and
+        # the residual std is what backs the confidence interval.
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        model_path = MODEL_DIR / "bikeshare_model.txt"
+        final_model.booster_.save_model(str(model_path))
+
+        residual_std = float(np.std(residuals)) if len(residuals) > 0 else None
+        metadata = {
+            "trained_at": datetime.now(UTC).isoformat(),
+            "feature_columns": FEATURE_COLUMNS,
+            "target_column": TARGET_COLUMN,
+            "n_training_rows": len(df),
+            "n_backtest_folds": len(backtest_results),
+            "backtest_model_mae": avg_model_mae,
+            "backtest_persistence_mae": avg_persistence_mae,
+            "residual_std": residual_std,
+            "residual_n": int(len(residuals)),
+        }
+        metadata_path = MODEL_DIR / "model_metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+        mlflow.log_artifact(str(model_path))
+        mlflow.log_artifact(str(metadata_path))
+        print(f"\nModel saved to {model_path}")
+        print(f"Metadata saved to {metadata_path}")
+        if residual_std is not None:
+            print(f"Residual std (from held-out folds, {len(residuals)} predictions): "
+                  f"{residual_std:.3f} — this backs the serving API's confidence interval")
 
 
 if __name__ == "__main__":

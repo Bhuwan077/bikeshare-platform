@@ -22,6 +22,19 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# The single canonical feature list — shared by training (src/ml/train.py)
+# and serving (src/serving/api.py). Defined here, not duplicated in
+# either caller, so the two can never silently drift out of sync on
+# which columns the model actually expects.
+FEATURE_COLUMNS = [
+    "capacity",
+    "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+    "lag_15m", "lag_30m", "lag_60m", "rolling_mean_60m",
+    "neighbor_avg_bikes_ratio",
+    "forecast_temp_c", "forecast_precip_mm",
+]
+TARGET_COLUMN = "target_bikes_available_60m"
+
 
 def _add_cyclical_time_features(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
     hour = df[time_col].dt.hour + df[time_col].dt.minute / 60.0
@@ -189,3 +202,34 @@ def build_features(
     df = pd.concat(target_frames, ignore_index=True)
 
     return df
+
+
+def get_latest_feature_row(
+    station_status: pd.DataFrame,
+    station_capacity: pd.DataFrame,
+    weather_forecast: pd.DataFrame,
+    station_id: str,
+) -> pd.Series | None:
+    """Serving-time entry point — used by src/serving/api.py.
+
+    Deliberately reuses build_features() itself rather than
+    reimplementing feature logic separately for serving. This is the
+    whole point of having ONE shared features module (per the plan):
+    training and serving can never silently drift apart, because they
+    call the exact same code.
+
+    The target column will be null for the most recent rows (there's
+    no future data yet to compute it from) — that's expected and
+    ignored here; serving only needs the FEATURE columns, not the
+    target, since predicting the target is the whole point.
+
+    Returns the most recent feature row for the given station, or
+    None if that station has no data at all.
+    """
+    if len(station_status) == 0:
+        return None
+    features = build_features(station_status, station_capacity, weather_forecast)
+    station_rows = features[features["station_id"] == station_id]
+    if len(station_rows) == 0:
+        return None
+    return station_rows.sort_values("fetched_at").iloc[-1]
