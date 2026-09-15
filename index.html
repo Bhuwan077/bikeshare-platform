@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bike-Share Intelligence Platform — Capital Bikeshare</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --ink:#16233D;
+    --red:#C8102E;
+    --teal:#1F6F63;
+    --amber:#C8862B;
+    --paper:#F5F5F2;
+    --line:#D8D4C8;
+    --white:#FFFFFF;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Space Grotesk',sans-serif;
+    line-height:1.5;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  a{color:var(--red);}
+
+  /* ---------- HERO / LINE MAP ---------- */
+  .hero{
+    padding:64px 32px 48px;
+    max-width:1040px;
+    margin:0 auto;
+  }
+  .hero h1{
+    font-size:clamp(2rem,5vw,3.4rem);
+    font-weight:700;
+    margin:0 0 12px;
+    letter-spacing:-0.01em;
+    max-width:16ch;
+  }
+  .hero p.subtitle{
+    font-size:1.15rem;
+    color:#425067;
+    max-width:52ch;
+    margin:0 0 40px;
+  }
+  .line-map{
+    position:relative;
+    padding:36px 0 8px;
+  }
+  .line-map .track{
+    position:absolute;
+    top:56px;
+    left:2%;
+    right:2%;
+    height:4px;
+    background:var(--red);
+    border-radius:2px;
+  }
+  .stops{
+    display:flex;
+    justify-content:space-between;
+    position:relative;
+    z-index:1;
+  }
+  .stop{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    width:19%;
+    text-align:center;
+  }
+  .stop .dot{
+    width:22px;height:22px;
+    border-radius:50%;
+    background:var(--white);
+    border:4px solid var(--red);
+    margin-bottom:14px;
+  }
+  .stop .label{
+    font-size:0.82rem;
+    font-weight:500;
+  }
+  .stop .sub{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.68rem;
+    color:#6B7688;
+    margin-top:4px;
+  }
+  @media(max-width:720px){
+    .stops{flex-wrap:wrap;row-gap:28px;}
+    .stop{width:46%;}
+    .line-map .track{display:none;}
+  }
+
+  section{
+    max-width:1040px;
+    margin:0 auto;
+    padding:40px 32px;
+    border-top:1px solid var(--line);
+  }
+  section h2{
+    font-size:1.5rem;
+    margin:0 0 28px;
+  }
+
+  /* ---------- TIMELINE ---------- */
+  .timeline{
+    list-style:none;
+    margin:0;padding:0;
+    position:relative;
+  }
+  .timeline::before{
+    content:"";
+    position:absolute;
+    left:19px;
+    top:8px;
+    bottom:8px;
+    width:2px;
+    background:var(--line);
+  }
+  .week{
+    position:relative;
+    padding:0 0 30px 56px;
+  }
+  .week:last-child{padding-bottom:0;}
+  .week .num{
+    position:absolute;
+    left:0;top:0;
+    width:40px;height:40px;
+    border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:600;
+    font-size:0.95rem;
+    background:var(--white);
+    border:2px solid var(--line);
+    color:#6B7688;
+  }
+  .week.done .num{border-color:var(--teal);color:var(--teal);background:#EAF3F1;}
+  .week.progress .num{border-color:var(--amber);color:var(--amber);background:#FBF2E4;}
+  .week h3{
+    margin:2px 0 4px;
+    font-size:1.05rem;
+  }
+  .week .tag{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.68rem;
+    padding:2px 8px;
+    border-radius:3px;
+    margin-left:10px;
+    vertical-align:middle;
+    color:var(--white);
+  }
+  .week.done .tag{background:var(--teal);}
+  .week.progress .tag{background:var(--amber);}
+  .week.todo .tag{background:#98A2B3;}
+  .week p{
+    margin:0;
+    color:#425067;
+    font-size:0.95rem;
+    max-width:60ch;
+  }
+
+  /* ---------- STACK TABLE ---------- */
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:0.92rem;
+  }
+  th{
+    text-align:left;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.72rem;
+    font-weight:500;
+    color:#6B7688;
+    padding:0 12px 10px 0;
+    border-bottom:1px solid var(--line);
+  }
+  td{
+    padding:12px 12px 12px 0;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  .swatch{
+    display:inline-block;
+    width:10px;height:10px;
+    border-radius:2px;
+    margin-right:8px;
+  }
+
+  /* ---------- LIVE DATA ---------- */
+  .upload-row{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    flex-wrap:wrap;
+    margin-bottom:24px;
+    padding:18px 20px;
+    background:var(--white);
+    border:1px solid var(--line);
+    border-radius:6px;
+  }
+  .upload-row input[type=file]{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.85rem;
+  }
+  .status-msg{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.82rem;
+    color:#6B7688;
+  }
+  #map{
+    height:420px;
+    border-radius:6px;
+    border:1px solid var(--line);
+    margin-bottom:24px;
+  }
+  .legend{
+    display:flex;
+    gap:24px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.78rem;
+    margin-bottom:24px;
+    color:#425067;
+  }
+  .legend span{display:flex;align-items:center;gap:6px;}
+  .legend .dot{width:10px;height:10px;border-radius:50%;}
+  #stations-table td.num{font-family:'IBM Plex Mono',monospace;}
+  .empty-state{
+    padding:40px 20px;
+    text-align:center;
+    color:#6B7688;
+    font-size:0.95rem;
+  }
+
+  footer{
+    max-width:1040px;
+    margin:0 auto;
+    padding:32px;
+    color:#6B7688;
+    font-size:0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Predicting empty docks before commuters find them.</h1>
+  <p class="subtitle">A 7-week data platform build on Capital Bikeshare's live feeds — ingestion through a serving, monitored model. Washington DC metro.</p>
+
+  <div class="line-map">
+    <div class="track"></div>
+    <div class="stops">
+      <div class="stop"><div class="dot"></div><div class="label">Sources</div><div class="sub">GBFS + weather</div></div>
+      <div class="stop"><div class="dot"></div><div class="label">Ingestion</div><div class="sub">pydantic + parquet</div></div>
+      <div class="stop"><div class="dot"></div><div class="label">Warehouse</div><div class="sub">dbt + duckdb</div></div>
+      <div class="stop"><div class="dot"></div><div class="label">Analytics / ML</div><div class="sub">dashboard + lgbm</div></div>
+      <div class="stop"><div class="dot"></div><div class="label">Serving</div><div class="sub">fastapi</div></div>
+    </div>
+  </div>
+</div>
+
+<section>
+  <h2>Build status</h2>
+  <ol class="timeline">
+    <li class="week done">
+      <div class="num">1</div>
+      <h3>Ingestion <span class="tag">DONE</span></h3>
+      <p>Five independent sources — live station status, station metadata, weather forecasts, weather actuals, trip history — each with retry/backoff, dead-letter routing, and Hive-partitioned Parquet output.</p>
+    </li>
+    <li class="week done">
+      <div class="num">2</div>
+      <h3>dbt warehouse <span class="tag">DONE</span></h3>
+      <p>Staging, an SCD Type 2 snapshot on station metadata, and four marts. 21 tests passing on ~10M+ real trips.</p>
+    </li>
+    <li class="week done">
+      <div class="num">3</div>
+      <h3>Orchestration + CI <span class="tag">DONE</span></h3>
+      <p>Dagster asset graph wrapping ingestion and the full dbt DAG. GitHub Actions running lint, tests, and a sample dbt build on every push.</p>
+    </li>
+    <li class="week done">
+      <div class="num">4</div>
+      <h3>Analytics + decision memo <span class="tag">DONE</span></h3>
+      <p>A Streamlit dashboard answering five real operational questions, plus a two-page memo recommending an evening rebalancing route.</p>
+    </li>
+    <li class="week done">
+      <div class="num">5</div>
+      <h3>Baselines + model <span class="tag">DONE</span></h3>
+      <p>Leakage-safe features, a rolling-origin backtest, and an honestly reported result: the model doesn't yet beat the persistence baseline on ~3 days of real history.</p>
+    </li>
+    <li class="week progress">
+      <div class="num">6</div>
+      <h3>Serving + monitoring <span class="tag">IN PROGRESS</span></h3>
+      <p>A FastAPI serving layer and Dockerfile already exist in the repo, ahead of the written README — the live accuracy loop isn't wired up yet.</p>
+    </li>
+    <li class="week todo">
+      <div class="num">7</div>
+      <h3>Polish <span class="tag">NOT STARTED</span></h3>
+      <p>README pass, walkthrough video, role-specific entry points.</p>
+    </li>
+  </ol>
+</section>
+
+<section>
+  <h2>Stack</h2>
+  <table>
+    <thead><tr><th>Layer</th><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><span class="swatch" style="background:var(--red)"></span>Ingestion</td><td>httpx + pydantic</td><td>Validate at the boundary; bad data fails loudly, not three models downstream</td></tr>
+      <tr><td><span class="swatch" style="background:var(--teal)"></span>Warehouse</td><td>DuckDB + dbt-core</td><td>Free, fast, runs in CI; industry-standard SQL transforms</td></tr>
+      <tr><td><span class="swatch" style="background:var(--amber)"></span>Orchestration</td><td>Dagster</td><td>Asset model maps 1:1 onto dbt models — one coherent lineage graph</td></tr>
+      <tr><td><span class="swatch" style="background:var(--ink)"></span>ML</td><td>LightGBM + MLflow</td><td>Gradient boosting beats deep learning on tabular data at this scale</td></tr>
+      <tr><td><span class="swatch" style="background:#98A2B3"></span>Serving</td><td>FastAPI + Docker</td><td>Real HTTP endpoint, free-tier deployable</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Live station data</h2>
+  <div class="upload-row">
+    <label class="mono" style="font-size:0.85rem;">Load a snapshot:</label>
+    <input type="file" id="file-input" accept=".json">
+    <span class="status-msg" id="status-msg">waiting for frontend_data.json</span>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot" style="background:var(--red)"></span> under 3 bikes</span>
+    <span><span class="dot" style="background:var(--amber)"></span> under 30% capacity</span>
+    <span><span class="dot" style="background:var(--teal)"></span> healthy</span>
+  </div>
+
+  <div id="map"></div>
+
+  <table id="stations-table">
+    <thead><tr><th>Station</th><th>Bikes</th><th>Docks</th><th>Capacity</th><th>Last reported</th></tr></thead>
+    <tbody id="stations-body">
+      <tr><td colspan="5" class="empty-state">No data loaded yet — see the export instructions below.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  Repo: <a href="https://github.com/bishalhumagain02/bikeshare-platform" target="_blank">bishalhumagain02/bikeshare-platform</a> — portfolio build, week 6 of 7.
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+  const map = L.map('map', {scrollWheelZoom:false}).setView([38.9072, -77.0369], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 18
+  }).addTo(map);
+
+  let markers = [];
+
+  function colorFor(bikes, capacity){
+    if (bikes <= 2) return getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+    if (capacity && bikes / capacity < 0.3) return getComputedStyle(document.documentElement).getPropertyValue('--amber').trim();
+    return getComputedStyle(document.documentElement).getPropertyValue('--teal').trim();
+  }
+
+  function pick(obj, keys, fallback){
+    for (const k of keys){ if (obj[k] !== undefined && obj[k] !== null) return obj[k]; }
+    return fallback;
+  }
+
+  function render(stations){
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    const tbody = document.getElementById('stations-body');
+    tbody.innerHTML = '';
+
+    if (!stations.length){
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">File loaded, but no rows found.</td></tr>';
+      return;
+    }
+
+    const bounds = [];
+    stations.sort((a,b) => pick(a,['num_bikes_available','bikes_available'],0) - pick(b,['num_bikes_available','bikes_available'],0));
+
+    stations.forEach(s => {
+      const lat = pick(s, ['lat','latitude'], null);
+      const lon = pick(s, ['lon','lng','longitude'], null);
+      const bikes = pick(s, ['num_bikes_available','bikes_available'], 0);
+      const docks = pick(s, ['num_docks_available','docks_available'], 0);
+      const capacity = pick(s, ['capacity'], bikes + docks);
+      const name = pick(s, ['name','station_name','station_id'], 'Unknown station');
+      let lastReported = pick(s, ['last_reported','last_updated'], null);
+      if (lastReported !== null){
+        // GBFS reports this as Unix seconds — convert to something readable
+        const asNumber = Number(lastReported);
+        lastReported = !isNaN(asNumber) && asNumber > 1000000000
+          ? new Date(asNumber * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+          : lastReported;
+      } else {
+        lastReported = '—';
+      }
+
+      if (lat !== null && lon !== null){
+        const marker = L.circleMarker([lat, lon], {
+          radius: 6,
+          color: colorFor(bikes, capacity),
+          fillColor: colorFor(bikes, capacity),
+          fillOpacity: 0.85,
+          weight: 1
+        }).bindPopup(`<strong>${name}</strong><br>${bikes} bikes / ${docks} docks`);
+        marker.addTo(map);
+        markers.push(marker);
+        bounds.push([lat, lon]);
+      }
+
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${name}</td><td class="num">${bikes}</td><td class="num">${docks}</td><td class="num">${capacity}</td><td class="num">${lastReported}</td>`;
+      tbody.appendChild(row);
+    });
+
+    if (bounds.length) map.fitBounds(bounds, {padding:[24,24]});
+  }
+
+  document.getElementById('file-input').addEventListener('change', function(e){
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev){
+      try {
+        const data = JSON.parse(ev.target.result);
+        const rows = Array.isArray(data) ? data : (data.stations || []);
+        document.getElementById('status-msg').textContent = `loaded ${rows.length} stations`;
+        render(rows);
+      } catch(err){
+        document.getElementById('status-msg').textContent = 'could not parse file — check it is valid JSON';
+      }
+    };
+    reader.readAsText(file);
+  });
+</script>
+
+</body>
+</html>
