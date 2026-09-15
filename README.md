@@ -10,6 +10,76 @@ Alexandria, Montgomery Co., Prince George's Co., Fairfax, Falls Church).
 Chosen over Divvy (Chicago) for deeper public trip history (2010+) and a
 lighter station count. Full reasoning: `docs/city-selection.md`.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph SRC["Sources"]
+        A["GBFS station_status<br/>~10 min"]
+        B["GBFS station_information<br/>daily"]
+        C["Historical trip CSVs<br/>2024-2025 backfill"]
+        D["Open-Meteo<br/>actuals + forecasts"]
+    end
+
+    subgraph CLOUD["Continuous collection - GitHub Actions"]
+        E["repository_dispatch<br/>(triggered by cron-job.org,<br/>NOT GitHub's own schedule: -<br/>see DECISIONS.md)"]
+    end
+
+    subgraph LAKE["Landing - Parquet, Hive-partitioned<br/>Backblaze B2 (cloud) + local raw/"]
+        F["dt=/hr= partitions"]
+    end
+
+    subgraph WH["Warehouse - DuckDB + dbt"]
+        G["staging<br/>6 models"]
+        H["SCD2 snapshot<br/>station metadata"]
+        I["marts<br/>dim_station, dim_trip_station,<br/>fct_trip, fct_station_status_hourly,<br/>4 analytics marts"]
+    end
+
+    subgraph OUT["Consumption"]
+        J["Streamlit dashboard<br/>5 analytics questions"]
+        K["Decision memo"]
+        L["Shared features module<br/>src/features/build_features.py"]
+        M["LightGBM + MLflow<br/>rolling-origin backtest"]
+        N["FastAPI + Docker<br/>/predict /health"]
+    end
+
+    A & B --> E --> F
+    C & D --> F
+    F --> G --> H --> I
+    G --> I
+    I --> J & K & L
+    L --> M --> N
+
+    P["Dagster - full asset graph,<br/>daily warehouse rebuild"] -.-> G & H & I
+```
+
+## Three entry points
+
+**Hiring for data engineering? Start here:** idempotent ingestion
+(`src/ingestion/`, proven by deleting/re-running partitions), SCD Type 2
+snapshot (`dbt/snapshots/stations_snapshot.sql`, verified against a real
+capacity change), the missing-crosswalk architecture fix (`dim_trip_station`
+— see `docs/DECISIONS.md`), Dagster asset graph, CI.
+
+**Hiring for analytics? Start here:** `docs/metrics.md` (precise metric
+definitions), `dashboard/app.py` (all 5 analytics questions, real data),
+`docs/decision-memo.md` (one recommendation, quantified, from real numbers).
+
+**Hiring for ML? Start here:** `src/features/build_features.py` (leakage
+prevention, proven with an adversarial test), `src/ml/train.py`
+(rolling-origin backtest), `docs/model-card.md` (an honestly-reported
+result — the model doesn't yet beat a simple baseline, and the model
+card says so directly, with a real progression table tracking the
+finding over time as more data accumulated).
+
+## Cost
+
+$0/month on free tiers: GitHub Actions (unlimited on a public repo),
+Backblaze B2 (measured: ~300MB/month against a 10GB free allowance),
+cron-job.org (free tier), DuckDB (embedded, no hosting cost). The only
+thing that would ever cost money is a paid deployment host for the
+serving API, which hasn't been done yet (see Week 6 status below).
+
 ## Quickstart
 
 ```bash
@@ -124,9 +194,37 @@ was resolved.
   a serious timezone bug that was invisible in development and only
   surfaced on a non-UTC-timezone machine (both in `docs/DECISIONS.md`)
 
+### Week 6 — Serving (in progress)
+
+- `src/serving/api.py` — FastAPI app: `POST /predict` (station_id →
+  prediction with a confidence interval, built from real held-out
+  backtest residuals, not a made-up number) and `GET /health`
+- `src/ml/train.py` now persists the trained model (`models/bikeshare_model.txt`)
+  and metadata (`models/model_metadata.json`) instead of discarding it
+  after every run
+- `src/features/build_features.py` gained `get_latest_feature_row()` and
+  the canonical `FEATURE_COLUMNS` list — the SAME feature code training
+  uses, reused (not reimplemented) for serving, so the two can't drift apart
+- Every prediction is logged (`models/prediction_log.parquet`) with every
+  feature value used — this is what a later monitoring job needs to join
+  against actuals once 60 minutes have elapsed
+- Tested end-to-end with FastAPI's `TestClient` against a real trained
+  model and real warehouse data — confirmed a genuine 200 response with
+  a real prediction and a correctly-populated log row, not just that
+  the code runs
+- Found and fixed a real bug during testing: an empty/stale
+  `station_status` result (data aged out of the freshness window)
+  crashed with a raw 500 instead of a clean error
+- `Dockerfile` written for deployment — **not yet verified**, no Docker
+  available in the environment this was built in; needs testing on your
+  machine before trusting it
+- **Not yet done:** actual deployment to a public host (Fly.io/HF
+  Spaces/Render), the "close the loop" monitoring job that joins logged
+  predictions to actuals, Evidently drift reports, champion/challenger
+  retraining
+
 ### Not started yet
 
-- Week 6: serving (FastAPI) + monitoring
 - Week 7: polish, video, final README pass
 
 ## Repo layout
@@ -146,9 +244,15 @@ src/
     build_features.py             # leakage-safe feature engineering, shared train/serve
   ml/
     baselines.py                  # persistence, seasonal-naive, station-hour-mean
-    train.py                      # rolling-origin backtest + LightGBM + MLflow logging
+    train.py                      # rolling-origin backtest + LightGBM + MLflow logging + model persistence
+  serving/
+    api.py                        # FastAPI: POST /predict, GET /health, prediction logging
   tools/
     download_from_b2.py           # pull accumulated cloud data down locally, on demand
+
+models/                            # trained model + metadata + prediction log (gitignored, generated)
+
+Dockerfile                         # for serving API deployment — untested, verify before trusting
 
 dbt/
   models/staging/                 # 6 models - rename/cast/dedupe only

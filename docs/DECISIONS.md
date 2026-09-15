@@ -273,8 +273,95 @@ environment's default timezone — this bug would have shipped
 silently to an interviewer's machine if it happened to be set to UTC,
 passing every test I ran on my own (also UTC) development machine.
 
-## Real bug: relative raw_data_path breaks when queried from a different working directory
-**Symptom:** `src/ml/train.py`, run from the project root, failed with
+## What breaks at 100x scale
+
+Honest engineering self-assessment — where this architecture would
+actually strain if this were a real production system at 100x current
+volume (roughly: every US metro's bikeshare system, or a single
+system polled every 6 seconds instead of every 10 minutes):
+
+- **DuckDB is single-file, single-machine.** It's genuinely excellent
+  for this project's scale (embedded, no server, fast), but a real
+  100x-scale warehouse needs a distributed engine (BigQuery, Snowflake,
+  or Spark) — DuckDB doesn't horizontally scale, and a multi-GB single
+  file becomes unwieldy to move/backup/version.
+- **The `dbt` staging models read raw Parquet directly via glob
+  patterns** (`read_parquet('.../dt=*/hr=*/*.parquet')`). At 100x the
+  file count, this glob-and-scan-everything approach gets slow —
+  a real system would need a proper catalog (e.g. Iceberg/Delta
+  tables) so queries can prune partitions without listing every file.
+- **`dim_trip_station`'s in-Python row_number dedup** (see
+  `stg_trip_stations.sql`) is fine at the current trip volume, but a
+  100x join fan-out (many more trips, many more distinct station-name
+  variants from typos/renames over a longer history) would need a
+  proper fuzzy-matching or entity-resolution step, not a straight
+  name-equality join.
+- **`fct_trip`'s incremental strategy re-scans a 3-day lookback window
+  on every run.** At 100x ingestion volume, even a 3-day window could
+  be enormous — the lookback would need to shrink, or the incremental
+  key/partitioning would need to be more granular (e.g. incremental by
+  `trip_date` partition, not a blanket time filter).
+- **The ML feature pipeline (`build_features.py`) processes the
+  entire station_status history in pandas, in memory,** for every
+  training run. At 100x row count this would need to move to a
+  streaming/chunked approach or a proper feature store, rather than
+  loading everything into one DataFrame.
+- **The serving API queries the warehouse live, per request**
+  (`stg_station_status` for the last 3 hours). At 100x request volume,
+  this needs a caching layer or a pre-computed "latest state" table
+  refreshed on a schedule — hitting DuckDB directly per API request
+  doesn't scale past a modest request rate.
+- **GitHub Actions + cron-job.org for continuous collection is a
+  genuinely clever free-tier solution at this project's scale, but
+  is not how you'd run production ingestion at 100x** — a real system
+  needs a managed scheduler (e.g. a proper Airflow/Dagster deployment
+  with real infrastructure) with SLAs, alerting, and horizontal
+  scaling, not a hobbyist webhook-triggered GitHub Actions workflow.
+
+## Six interview stories, grounded in what actually happened
+
+1. **A bug found in real data:** the capacity-exceedance test that
+   failed for the first time after several days of live polling — 15
+   station-hours at ~150% of capacity, investigated and traced to
+   likely e-bike valet overflow parking near Georgetown University,
+   not a pipeline bug. Ruled out a stale-SCD2-join explanation first
+   by checking the snapshot's own history before accepting the finding.
+
+2. **Schema drift, for real:** normalizing Capital Bikeshare's pre-2020
+   vs. post-2020 trip CSV formats — and discovering that even after
+   mapping both eras to the same COLUMN NAMES, they still produced
+   incompatible physical Parquet TYPES (`NULL`-type vs. `VARCHAR` for
+   `trip_id`, `int64` vs. `float64` for duration) that broke DuckDB the
+   moment both eras were combined. Column names matching isn't enough.
+
+3. **A metric invented and defended:** "station empty-hours" — defined
+   precisely in `metrics.md` (demand-hours only, 06:00-23:00, with an
+   explicitly stated poll-interval limitation), not just computed and
+   presented as exact.
+
+4. **A model that didn't win, reported honestly:** the LightGBM model
+   lost to a simple persistence baseline on real data, and *stayed*
+   losing after doubling the training window (3→7 days) — tracked in
+   a running results table in `model-card.md` rather than only
+   reporting the most flattering run.
+
+5. **A backfill, and what made it safe to rerun:** every ingestion
+   script is idempotent by construction (same partition, same output),
+   proven by deliberately deleting a partition and rerunning it — and
+   separately, a *stale incremental dbt model* was diagnosed (a
+   10-million-row relationship mismatch that didn't move at all after
+   a schema fix, which was the actual tell) and fixed with
+   `--full-refresh`.
+
+6. **A tradeoff, with the cost accepted:** GitHub's own `schedule:`
+   trigger turned out to be unreliable for a 10-minute cadence
+   (2-3 hour real delays, confirmed) — switched to an
+   externally-triggered `repository_dispatch` via a free cron service,
+   trading a small amount of architectural cleanliness for something
+   that actually works, and documenting why rather than hiding the
+   workaround.
+
+## Real bug: relative raw_data_path breaks when queried from a different working directory**Symptom:** `src/ml/train.py`, run from the project root, failed with
 `IO Error: No files found that match the pattern "../raw/station_status/..."`
 even though `dbt build` had just succeeded moments earlier.
 
